@@ -1,0 +1,6 @@
+{
+  "name": "Flutter POS Enterprise Blueprint & Simulator",
+  "description": "Enterprise-grade Flutter POS blueprint with Riverpod, Drift SQLite, Cloud Sync, and ESC/POS Printing, paired with a fully interactive Next.js simulator dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
