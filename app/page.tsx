@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useState, useMemo, useEffect } from "react";
+import { getNativeDeviceId } from "@/lib/device-helper";
 import { motion, AnimatePresence } from "motion/react";
+import Link from "next/link";
 import { 
   ShoppingCart, 
   Package, 
@@ -40,7 +42,17 @@ import {
   CreditCard,
   UserCheck,
   Edit,
-  Camera
+  Camera,
+  Shield,
+  Key,
+  Smartphone,
+  Mail,
+  User,
+  Calendar,
+  Clock,
+  ExternalLink,
+  XCircle,
+  CheckCircle
 } from "lucide-react";
 
 import {
@@ -370,6 +382,197 @@ function getFirstAllowedTab(role: string): "cashier" | "products" | "history" | 
 }
 
 export default function POSApplication() {
+  // --- CLIENT-SIDE HYBRID LICENSE STATE ---
+  const [isLicenseValid, setIsLicenseValid] = useState<boolean | null>(null);
+  const [licenseDetails, setLicenseDetails] = useState<any>(null);
+  const [deviceId, setDeviceId] = useState("");
+  const [licenseError, setLicenseError] = useState("");
+  const [activationKey, setActivationKey] = useState("");
+  const [isActivating, setIsActivating] = useState(false);
+
+  const [showTrialForm, setShowTrialForm] = useState(false);
+  const [trialName, setTrialName] = useState("");
+  const [trialEmail, setTrialEmail] = useState("");
+  const [isRegisteringTrial, setIsRegisteringTrial] = useState(false);
+  const [trialError, setTrialError] = useState("");
+
+  useEffect(() => {
+    const initDeviceAndLicense = async () => {
+      // 1. Get or generate a persistent Device ID (try native first, then fallback to local storage)
+      let dId = localStorage.getItem("spos_device_id");
+      
+      try {
+        const nativeId = await getNativeDeviceId();
+        if (nativeId) {
+          dId = nativeId;
+          localStorage.setItem("spos_device_id", dId);
+        }
+      } catch (err) {
+        console.warn("Gagal mengambil native device ID:", err);
+      }
+
+      if (!dId) {
+        dId = "SPOS-DEV-" + Math.random().toString(36).substring(2, 11).toUpperCase();
+        localStorage.setItem("spos_device_id", dId);
+      }
+      setDeviceId(dId);
+
+      // 2. Check local license cache
+      const storedLicense = localStorage.getItem("spos_license");
+      if (!storedLicense) {
+        setIsLicenseValid(false);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(storedLicense);
+        setLicenseDetails(parsed);
+
+        // Offline check: Is key expired?
+        if (Date.now() > parsed.expiresAt) {
+          setIsLicenseValid(false);
+          setLicenseError("Masa berlaku lisensi Anda telah kedaluwarsa.");
+          return;
+        }
+
+        // Offline check: relative clock manipulation detection
+        const lastUsed = Number(localStorage.getItem("spos_last_used") || "0");
+        if (Date.now() < lastUsed) {
+          setIsLicenseValid(false);
+          setLicenseError("Deteksi manipulasi waktu sistem. Silakan sesuaikan kembali jam komputer Anda.");
+          return;
+        }
+        localStorage.setItem("spos_last_used", Date.now().toString());
+
+        // Valid locally, let user in immediately (Offline-First support)
+        setIsLicenseValid(true);
+
+        // Verify online in background if possible
+        fetch("/api/license/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            key: parsed.key,
+            email: parsed.customerEmail,
+            expiresAt: parsed.expiresAt,
+            signature: parsed.signature,
+            deviceId: dId,
+          }),
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              const errData = await res.json();
+              setIsLicenseValid(false);
+              setLicenseError(errData.error || "Validasi lisensi online gagal.");
+              localStorage.removeItem("spos_license");
+            }
+          })
+          .catch(() => {
+            // Ignore network errors - allows continuing fully offline!
+            console.log("Modus Offline: Menggunakan cache lisensi lokal.");
+          });
+      } catch (err) {
+        setIsLicenseValid(false);
+        localStorage.removeItem("spos_license");
+      }
+    };
+
+    initDeviceAndLicense();
+  }, []);
+
+  const handleActivateKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLicenseError("");
+    if (!activationKey) return;
+
+    setIsActivating(true);
+    try {
+      const res = await fetch("/api/license/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: activationKey.trim(), deviceId }),
+      });
+
+      const contentType = res.headers.get("content-type") || "";
+      let data: any;
+
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        const previewText = text.substring(0, 150).replace(/<[^>]*>/g, " ").trim() + "...";
+        if (text.includes("accounts.google.com") || text.includes("Sign in") || text.includes("login")) {
+          throw new Error(`Akses ditolak oleh Google Auth proxy. Pastikan URL Admin Panel di pengaturan (.env) menggunakan URL 'Shared' (https://ais-pre-...) yang sudah dipublikasikan (Shared) secara publik, bukan URL developer privat (https://ais-dev-...). (Cuplikan: ${previewText})`);
+        } else {
+          throw new Error(`Server mengembalikan respon tidak valid (HTML/Teks). Status: ${res.status}. Cuplikan Respon: "${previewText}"`);
+        }
+      }
+
+      if (res.ok && data.success) {
+        localStorage.setItem("spos_license", JSON.stringify(data.license));
+        localStorage.setItem("spos_last_used", Date.now().toString());
+        setLicenseDetails(data.license);
+        setIsLicenseValid(true);
+        setActivationKey("");
+      } else {
+        setLicenseError(data.error || "Gagal mengaktifkan lisensi.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setLicenseError(err.message || "Gagal menghubungi server aktivasi. Periksa koneksi internet Anda.");
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
+  const handleRegisterTrial = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTrialError("");
+    if (!trialName || !trialEmail) {
+      setTrialError("Nama dan Email wajib diisi.");
+      return;
+    }
+
+    setIsRegisteringTrial(true);
+    try {
+      const res = await fetch("/api/license/trial", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerName: trialName, customerEmail: trialEmail, deviceId }),
+      });
+
+      const contentType = res.headers.get("content-type") || "";
+      let data: any;
+
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        const previewText = text.substring(0, 150).replace(/<[^>]*>/g, " ").trim() + "...";
+        if (text.includes("accounts.google.com") || text.includes("Sign in") || text.includes("login")) {
+          throw new Error(`Akses ditolak oleh Google Auth proxy. Pastikan URL Admin Panel di pengaturan (.env) menggunakan URL 'Shared' (https://ais-pre-...) yang sudah dipublikasikan (Shared) secara publik, bukan URL developer privat (https://ais-dev-...). (Cuplikan: ${previewText})`);
+        } else {
+          throw new Error(`Server mengembalikan respon tidak valid (HTML/Teks). Status: ${res.status}. Cuplikan Respon: "${previewText}"`);
+        }
+      }
+
+      if (res.ok && data.success) {
+        localStorage.setItem("spos_license", JSON.stringify(data.license));
+        localStorage.setItem("spos_last_used", Date.now().toString());
+        setLicenseDetails(data.license);
+        setIsLicenseValid(true);
+        setShowTrialForm(false);
+      } else {
+        setTrialError(data.error || "Gagal mengaktifkan trial gratis.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setTrialError(err.message || "Gagal terhubung ke server pendaftaran trial.");
+    } finally {
+      setIsRegisteringTrial(false);
+    }
+  };
+
   // App States
   const [products, setProducts] = useState<Product[]>(DEFAULT_PRODUCTS);
 
@@ -1584,6 +1787,176 @@ export default function POSApplication() {
     return products.filter((p) => p.stock <= p.minStock).length;
   }, [products]);
 
+  // 1. Loading state while checking license
+  if (isLicenseValid === null) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 relative font-sans">
+        <div className="absolute -top-40 -left-40 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="flex flex-col items-center space-y-4 relative z-10 text-center">
+          <div className="p-4 bg-indigo-950/40 border border-indigo-900/30 rounded-2xl animate-pulse text-indigo-400">
+            <Shield className="w-8 h-8 animate-spin" />
+          </div>
+          <h2 className="text-sm font-black text-slate-300 tracking-wider uppercase font-mono">Memeriksa Kepatuhan Lisensi...</h2>
+          <p className="text-3xs text-slate-500 max-w-xs leading-relaxed font-mono">Smart-POS Pro sedang memverifikasi integritas kunci dekripsi & tanda tangan digital...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Activation barrier when license is invalid
+  if (isLicenseValid === false) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 relative overflow-y-auto font-sans">
+        {/* Decorative ambient background */}
+        <div className="absolute -top-40 -left-40 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="w-full max-w-md bg-slate-900 border border-slate-850 rounded-3xl p-8 shadow-2xl relative z-10 space-y-6">
+          <div className="flex flex-col items-center text-center space-y-2">
+            <div className="p-4 bg-indigo-950 border border-indigo-900/50 rounded-2xl text-indigo-400 shadow-xl shadow-indigo-500/10">
+              <Key className="w-8 h-8 stroke-[2.5]" />
+            </div>
+            <h1 className="text-xl font-black text-slate-100 tracking-tight">Aktivasi SMART-POS Pro</h1>
+            <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+              Lisensi yang valid diperlukan untuk menggunakan aplikasi kasir offline-first. Aktifkan key Anda atau gunakan uji coba gratis 3 hari.
+            </p>
+          </div>
+
+          {!showTrialForm ? (
+            <div className="space-y-5">
+              <form onSubmit={handleActivateKey} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-3xs font-black tracking-wider uppercase text-slate-400 flex items-center gap-1">
+                    <Lock className="w-3 h-3 text-slate-500" /> Masukkan Serial Key Lisensi
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: SPOS-XXXX-XXXX-XXXX-XXXX"
+                    value={activationKey}
+                    onChange={(e) => setActivationKey(e.target.value.toUpperCase())}
+                    className="w-full bg-slate-950 border border-slate-800 text-xs rounded-xl py-3 px-4 font-bold text-slate-200 tracking-wider text-center focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-700 font-mono"
+                    disabled={isActivating}
+                  />
+                </div>
+
+                {licenseError && (
+                  <div className="text-3xs text-red-400 font-bold bg-red-950/40 border border-red-900/30 py-2.5 px-3.5 rounded-xl flex items-start gap-2 leading-normal">
+                    <XCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-500" />
+                    <span>{licenseError}</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isActivating || !activationKey}
+                  className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:border-transparent text-white font-black text-xs tracking-wider uppercase rounded-xl transition-all cursor-pointer shadow-lg shadow-indigo-500/15 flex items-center justify-center gap-2"
+                >
+                  {isActivating ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" /> Memvalidasi Kriptografi...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" /> Aktifkan Lisensi POS
+                    </>
+                  )}
+                </button>
+              </form>
+
+              <div className="relative flex py-2 items-center">
+                <div className="flex-grow border-t border-slate-850"></div>
+                <span className="flex-shrink mx-4 text-3xs font-black tracking-wider uppercase text-slate-600">ATAU</span>
+                <div className="flex-grow border-t border-slate-850"></div>
+              </div>
+
+              <div className="w-full">
+                <button
+                  type="button"
+                  onClick={() => setShowTrialForm(true)}
+                  className="w-full py-3 bg-slate-950 hover:bg-slate-850 border border-slate-800 rounded-xl text-slate-300 font-black text-3xs tracking-wider uppercase transition-colors cursor-pointer text-center flex items-center justify-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" /> Trial Gratis 3 Hari
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleRegisterTrial} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-3xs font-black tracking-wider uppercase text-slate-400 flex items-center gap-1">
+                  <User className="w-3 h-3 text-slate-500" /> Nama Anda / Nama Toko
+                </label>
+                <input
+                  type="text"
+                  placeholder="Contoh: Toko Barokah Jaya"
+                  value={trialName}
+                  onChange={(e) => setTrialName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 text-xs rounded-xl py-2.5 px-3.5 font-bold text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-700"
+                  disabled={isRegisteringTrial}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-3xs font-black tracking-wider uppercase text-slate-400 flex items-center gap-1">
+                  <Mail className="w-3 h-3 text-slate-500" /> Alamat Email
+                </label>
+                <input
+                  type="email"
+                  placeholder="Contoh: barokah@gmail.com"
+                  value={trialEmail}
+                  onChange={(e) => setTrialEmail(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 text-xs rounded-xl py-2.5 px-3.5 font-bold text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-700"
+                  disabled={isRegisteringTrial}
+                />
+              </div>
+
+              {trialError && (
+                <p className="text-3xs text-red-400 font-bold bg-red-950/40 border border-red-900/30 py-2.5 px-3.5 rounded-xl leading-normal">
+                  {trialError}
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTrialForm(false);
+                    setTrialError("");
+                  }}
+                  className="py-2.5 bg-slate-950 hover:bg-slate-850 border border-slate-800 rounded-xl text-slate-400 font-black text-xs uppercase transition-colors cursor-pointer text-center"
+                  disabled={isRegisteringTrial}
+                >
+                  Kembali
+                </button>
+                <button
+                  type="submit"
+                  disabled={isRegisteringTrial || !trialName || !trialEmail}
+                  className="py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-500/15"
+                >
+                  {isRegisteringTrial ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" /> Mendaftarkan...
+                    </>
+                  ) : (
+                    <>
+                      Mulai Trial <Sparkles className="w-3.5 h-3.5 text-indigo-200" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
+
+          <div className="border-t border-slate-850 pt-4 flex flex-col items-center gap-1 font-mono text-[9px] text-slate-500">
+            <span className="flex items-center gap-1">
+              <Smartphone className="w-3 h-3 text-slate-500" /> ID Perangkat: {deviceId}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col min-h-screen bg-slate-950 font-sans text-slate-100 selection:bg-indigo-600 selection:text-white antialiased">
       {/* Top Navbar */}
@@ -2766,9 +3139,48 @@ export default function POSApplication() {
                         <p>Didesain secara khusus menggunakan arsitektur hybrid modern yang memastikan operasional kasir tetap berjalan normal dalam keadaan offline sekalipun, dengan fungsionalitas backup handal serta kontrol versi rollback mutakhir.</p>
                       </div>
 
-                      <div className="border-t border-slate-900/80 pt-4 text-[10px] text-slate-500 flex justify-between items-center font-mono">
-                        <span>Pengembang: AI Studio Engineer</span>
-                        <span>Lisensi: Pro - Lifetime</span>
+                      <div className="border-t border-slate-900/80 pt-4 space-y-3">
+                        <div className="text-[10px] text-slate-500 flex justify-between items-center font-mono">
+                          <span>Pengembang: AI Studio Engineer</span>
+                          <span className="text-indigo-400 font-extrabold uppercase">
+                            Lisensi: {licenseDetails?.type === "trial" ? "Trial Gratis" : licenseDetails?.type === "lifetime" ? "Pro - Lifetime" : `Pro - ${licenseDetails?.type === "monthly" ? "Bulanan" : "Tahunan"}`}
+                          </span>
+                        </div>
+                        {licenseDetails && (
+                          <div className="bg-slate-950/80 border border-slate-900/60 p-3.5 rounded-xl space-y-1.5 font-mono text-[9px] text-slate-400">
+                            <p className="flex justify-between">
+                              <span className="text-slate-500">Pemilik Toko:</span>
+                              <span className="text-slate-300 font-bold">{licenseDetails.customerName}</span>
+                            </p>
+                            <p className="flex justify-between">
+                              <span className="text-slate-500">Email Terdaftar:</span>
+                              <span className="text-slate-300">{licenseDetails.customerEmail}</span>
+                            </p>
+                            <p className="flex justify-between">
+                              <span className="text-slate-500">Key Aktif:</span>
+                              <span className="text-indigo-300 tracking-wider font-bold select-all">{licenseDetails.key}</span>
+                            </p>
+                            <p className="flex justify-between">
+                              <span className="text-slate-500">Masa Berlaku:</span>
+                              <span className="text-slate-300">
+                                {licenseDetails.type === "lifetime" ? "Seumur Hidup (Lifetime)" : new Date(licenseDetails.expiresAt).toLocaleDateString()}
+                              </span>
+                            </p>
+                            {licenseDetails.type !== "lifetime" && (
+                              <p className="flex justify-between">
+                                <span className="text-slate-500">Sisa Hari:</span>
+                                <span className={`font-bold ${Math.max(0, Math.ceil((licenseDetails.expiresAt - Date.now()) / (24 * 60 * 60 * 1000))) <= 1 ? 'text-red-400' : 'text-emerald-400'}`}>
+                                  {Math.max(0, Math.ceil((licenseDetails.expiresAt - Date.now()) / (24 * 60 * 60 * 1000)))} Hari Lagi
+                                </span>
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex justify-end pt-1">
+                          <Link href="https://ais-pre-bkxv65hf2f2focysxjwl7c-61170093996.asia-southeast1.run.app/admin" target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1 hover:underline">
+                            <Shield className="w-3.5 h-3.5" /> Buka Panel Admin Lisensi <ExternalLink className="w-3 h-3" />
+                          </Link>
+                        </div>
                       </div>
                     </div>
                   </div>
