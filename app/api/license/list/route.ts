@@ -1,17 +1,33 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getLicenses } from "@/lib/license-store";
 import { forwardToLicenseServer } from "@/lib/license-helper";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-    const serverUrl = process.env.LICENSE_SERVER_URL || "https://ais-pre-bkxv65hf2f2focysxjwl7c-61170093996.asia-southeast1.run.app";
+    const serverUrl = process.env.LICENSE_SERVER_URL;
     const authHeader = req.headers.get("authorization");
 
-    return await forwardToLicenseServer(`${serverUrl}/api/license/list`, {
-      method: "GET",
-      headers: authHeader ? { "Authorization": authHeader } : {},
-    });
+    if (serverUrl) {
+      try {
+        const remoteRes = await forwardToLicenseServer(`${serverUrl}/api/license/list`, {
+          method: "GET",
+          headers: authHeader ? { "Authorization": authHeader } : {},
+        });
+        if (remoteRes.status < 500) {
+          return remoteRes;
+        }
+      } catch (err) {
+        console.warn("Forwarding list request to license server failed, using local fallback:", err);
+      }
+    }
+
+    const licenses = getLicenses();
+    return NextResponse.json({ success: true, licenses });
   } catch (error: any) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: false, error: error.message || "Gagal mengambil daftar lisensi." }, { status: 500 });
   }
 }
+
 

@@ -1,6 +1,6 @@
 {
-  "name": "Flutter POS Enterprise Blueprint & Simulator",
-  "description": "Enterprise-grade Flutter POS blueprint with Riverpod, Drift SQLite, Cloud Sync, and ESC/POS Printing, paired with a fully interactive Next.js simulator dashboard.",
+  "name": "Smart POS Kasir Enterprise",
+  "description": "Sistem Kasir POS Professional dengan Manajemen Stok, Multi-Role, Kasir, Laporan Penjualan, Supplier, Pelanggan, dan Lisensi.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

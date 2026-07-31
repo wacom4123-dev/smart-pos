@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 
 export async function forwardToLicenseServer(url: string, options: RequestInit) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3500);
+
   try {
-    const res = await fetch(url, options);
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
     const contentType = res.headers.get("content-type") || "";
     
     if (!contentType.includes("application/json")) {
@@ -30,8 +38,9 @@ export async function forwardToLicenseServer(url: string, options: RequestInit) 
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch (error: any) {
+    clearTimeout(timeoutId);
     return NextResponse.json(
-      { error: `Gagal menghubungi server lisensi: ${error.message}` },
+      { error: `Gagal menghubungi server lisensi: ${error.name === 'AbortError' ? 'Koneksi timeout (3.5 detik)' : error.message}` },
       { status: 500 }
     );
   }

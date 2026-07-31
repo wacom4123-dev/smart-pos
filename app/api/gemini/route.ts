@@ -1,19 +1,32 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 
-// Initialize Gemini SDK with telemetry header
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+export const dynamic = "force-dynamic";
+
+let aiClient: GoogleGenAI | null = null;
+
+function getAiClient() {
+  if (!aiClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not defined. Silakan tambahkan GEMINI_API_KEY di panel Secrets atau .env");
     }
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return aiClient;
+}
 
 export async function POST(req: NextRequest) {
   try {
     const { action, prompt, data } = await req.json();
+    const ai = getAiClient();
 
     if (action === "analyze") {
       // Prompt for sales report analysis
